@@ -1,0 +1,39 @@
+# Core data processing libraries
+pandas>=1.5.0
+pyreadstat>=1.2.0
+numpy>=1.21.0
+
+# Environment variables management
+python-dotenv>=1.0.0
+
+# Azure OpenAI integration
+azure-ai-inference>=1.0.0
+azure-core>=1.24.0
+
+# Pydantic for data validation and ontology models
+pydantic>=2.0.0
+
+# JSON handling and file operations
+pathlib2>=2.3.7; python_version < "3.4"
+
+# Enum support (built-in for Python 3.4+)
+enum34>=1.1.10; python_version < "3.4"
+
+# Type hints support
+typing-extensions>=4.0.0
+
+# Regular expressions (built-in but ensuring compatibility)
+regex>=2022.1.18
+
+# Optional: Enhanced JSON handling
+orjson>=3.8.0
+
+# Development and testing (optional)
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=22.0.0
+flake8>=5.0.0
+
+# Documentation (optional)
+sphinx>=5.0.0
+sphinx-rtd-theme>=1.0.0

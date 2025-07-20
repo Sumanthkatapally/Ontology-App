@@ -1,0 +1,18 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+myenv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# Survey data files
+#data/survey/National/**/
+
+# Optional: Ignore all files in data folder
+data/
