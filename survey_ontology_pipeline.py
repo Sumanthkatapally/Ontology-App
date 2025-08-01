@@ -23,6 +23,7 @@ import tempfile
 import importlib.util
 import argparse
 
+
 def setup_argparse():
     """Setup command line argument parsing"""
     parser = argparse.ArgumentParser(
@@ -215,7 +216,10 @@ def execute_step4_class_creation_smart(input_file_path: str, file_type: str, out
         
         # Use the Azure function for class name generation
         print("🔧 Running direct tool class name generation...")
-        results_json = creation_module.generate_class_names_direct(survey_json)
+        results_json = creation_module.generate_class_names_direct_with_ontology(
+            survey_json,
+            str(global_ontology_path)
+        )
         results = json.loads(results_json)
         
         # Save class names results
@@ -337,10 +341,10 @@ def execute_step2_csv_conversion(sav_file_path: str, output_dirs: dict):
         print(f"❌ Error in CSV conversion: {e}")
         return None
 
-def execute_step3_classification(output_dirs: dict):
-    """Step 3: Classify survey questions into categories using Azure OpenAI"""
+def execute_step3_classification_with_ontology(output_dirs: dict):
+    """Step 3: Classify survey questions into categories using Azure OpenAI with global ontology"""
     print("\n" + "="*60)
-    print("🚀 STEP 3: Question Classification")
+    print("🚀 STEP 3: Question Classification with Global Ontology")
     print("="*60)
     
     # Check for required input from step 1
@@ -368,14 +372,24 @@ def execute_step3_classification(output_dirs: dict):
         return None
     
     try:
-        print("🤖 Starting Azure OpenAI classification service...")
+        print("🤖 Starting Azure OpenAI classification service with global ontology...")
         
         # Extract base filename for output
         base_name = Path(survey_dict_path).stem
         
-        # Use the Azure function for classification
-        print("🔧 Running direct tool classification...")
-        results_json = class_module.classify_with_direct_tool(survey_json, base_name)
+        # Determine global ontology path (same directory as survey data)
+        base_dir = output_dirs["SurveyDictionary"].parent
+        global_ontology_path = base_dir / "global_ontology.json"
+        
+        print(f"📚 Using global ontology path: {global_ontology_path}")
+        
+        # Use the new Azure function with ontology integration
+        print("🔧 Running direct tool classification with ontology lookup...")
+        results_json = class_module.classify_with_direct_tool_and_ontology(
+            survey_json, 
+            base_name,
+            str(global_ontology_path)
+        )
         results = json.loads(results_json)
         
         # Save categorized results
@@ -395,13 +409,29 @@ def execute_step3_classification(output_dirs: dict):
         
         # Print category summary
         category_counts = {}
+        ontology_hits = 0
+        llm_classifications = 0
+        
         for result in results.values():
             category = result.get('category', 'Unknown')
             category_counts[category] = category_counts.get(category, 0) + 1
+            
+            # Count ontology vs LLM usage (if metadata exists)
+            source = result.get('source', 'unknown')
+            if source == 'global_ontology':
+                ontology_hits += 1
+            elif source == 'LLM_classification':
+                llm_classifications += 1
         
         print("\n📊 CATEGORY DISTRIBUTION:")
         for category, count in sorted(category_counts.items()):
             print(f"   {category}: {count} questions")
+        
+        if ontology_hits + llm_classifications > 0:
+            print(f"\n📚 ONTOLOGY PERFORMANCE:")
+            print(f"   📚 Found in ontology: {ontology_hits}")
+            print(f"   🤖 LLM classifications: {llm_classifications}")
+            print(f"   📈 Ontology hit rate: {ontology_hits/(ontology_hits+llm_classifications)*100:.1f}%")
         
         return str(categorized_file)
         
@@ -409,10 +439,10 @@ def execute_step3_classification(output_dirs: dict):
         print(f"❌ Error in classification: {e}")
         return None
 
-def execute_step4_class_creation(output_dirs: dict):
-    """Step 4: Generate class names using Azure OpenAI"""
+def execute_step4_class_creation_with_ontology(output_dirs: dict):
+    """Step 4: Generate class names using Azure OpenAI with global ontology"""
     print("\n" + "="*60)
-    print("🚀 STEP 4: Class Name Generation")
+    print("🚀 STEP 4: Class Name Generation with Global Ontology")
     print("="*60)
     
     # Check for required input from step 3
@@ -440,11 +470,20 @@ def execute_step4_class_creation(output_dirs: dict):
         return None
     
     try:
-        print("🤖 Starting Azure OpenAI class name generation service...")
+        print("🤖 Starting Azure OpenAI class name generation service with global ontology...")
         
-        # Use the Azure function for class name generation
-        print("🔧 Running direct tool class name generation...")
-        results_json = creation_module.generate_class_names_direct(survey_json)
+        # Determine global ontology path (same directory as survey data)
+        base_dir = output_dirs["CategoryClassification"].parent
+        global_ontology_path = base_dir / "global_ontology.json"
+        
+        print(f"📚 Using global ontology path: {global_ontology_path}")
+        
+        # Use the new Azure function with ontology integration
+        print("🔧 Running direct tool class name generation with ontology lookup...")
+        results_json = creation_module.generate_class_names_direct_with_ontology(
+            survey_json,
+            str(global_ontology_path)
+        )
         results = json.loads(results_json)
         
         # Save class names results
@@ -454,16 +493,27 @@ def execute_step4_class_creation(output_dirs: dict):
         
         # Create complete survey with class names
         complete_survey = survey_data.copy()
+        ontology_hits = 0
+        llm_generations = 0
+        
         for column_name, result in results.items():
             if column_name in complete_survey:
                 complete_survey[column_name]["class_name"] = result.get("class_name_key", "UnknownCategory")
                 complete_survey[column_name]["generated_class_name"] = result.get("generated_class_name", "UnknownCategory")
                 complete_survey[column_name]["generation_metadata"] = {
                     "approach": result.get("approach", "direct_tool"),
-                    "model_used": result.get("model_used", "DeepSeek-R1-0528")
+                    "model_used": result.get("model_used", "DeepSeek-R1-0528"),
+                    "source": result.get("source", "unknown")
                 }
                 if "error" in result:
                     complete_survey[column_name]["generation_metadata"]["error"] = result["error"]
+                
+                # Count ontology vs LLM usage
+                source = result.get('source', 'unknown')
+                if source == 'global_ontology':
+                    ontology_hits += 1
+                elif source == 'LLM_generation':
+                    llm_generations += 1
         
         # Save complete survey with class names
         complete_file = output_dirs["ClassCreation"] / "complete_survey_with_class_names.json"
@@ -478,12 +528,18 @@ def execute_step4_class_creation(output_dirs: dict):
         total = len(results)
         print(f"\n📊 SUMMARY: Successfully generated {successful}/{total} class names")
         
+        if ontology_hits + llm_generations > 0:
+            print(f"📚 ONTOLOGY PERFORMANCE:")
+            print(f"   📚 Found in ontology: {ontology_hits}")
+            print(f"   🤖 LLM generations: {llm_generations}")
+            print(f"   📈 Ontology hit rate: {ontology_hits/(ontology_hits+llm_generations)*100:.1f}%")
+        
         return str(class_names_file)
         
     except Exception as e:
         print(f"❌ Error in class name generation: {e}")
         return None
-
+    
 def execute_step5_ontology_creation(output_dirs: dict):
     """Step 5: Generate final ontology Python module"""
     print("\n" + "="*60)
@@ -523,7 +579,7 @@ def execute_step5_ontology_creation(output_dirs: dict):
         return None
 
 def main():
-    """Main pipeline execution with step selection"""
+    """Main pipeline execution with global ontology integration"""
     parser = setup_argparse()
     args = parser.parse_args()
     
@@ -545,11 +601,12 @@ def main():
     # Get absolute path for better display
     input_file_abs = Path(input_file_path).resolve()
     
-    print("🌟 SURVEY ONTOLOGY GENERATION PIPELINE")
-    print("=" * 60)
+    print("🌟 SURVEY ONTOLOGY GENERATION PIPELINE WITH GLOBAL ONTOLOGY")
+    print("=" * 70)
     print(f"📁 Input file: {input_file_abs}")
     print(f"📁 Base directory: {base_dir}")
     print(f"📁 Working directory: {Path.cwd()}")
+    print(f"📚 Global ontology: {base_dir}/global_ontology.json")
     
     # Determine which steps to run
     steps_to_run = []
@@ -575,7 +632,7 @@ def main():
     # Setup output directories using smart detection
     output_dirs = setup_output_directories_smart(input_file_path, file_type)
     
-    # Execute steps in order with smart input handling
+    # Execute steps in order with smart input handling and ontology integration
     results = {}
     
     try:
@@ -598,13 +655,13 @@ def main():
                         
                 elif step == "step3":
                     if file_type in ['sav', 'dictionary_json']:
-                        result = execute_step3_classification(output_dirs)
+                        result = execute_step3_classification_with_ontology(output_dirs)
                     else:
                         print("⏭️ Skipping Step 3 - categorized input provided")
                         result = "skipped"
                         
                 elif step == "step4":
-                    result = execute_step4_class_creation_smart(input_file_path, file_type, output_dirs)
+                    result = execute_step4_class_creation_with_ontology(output_dirs)
                     
                 elif step == "step5":
                     result = execute_step5_ontology_creation(output_dirs)
@@ -618,17 +675,18 @@ def main():
                 print()  # Add spacing between steps
         
         # Success summary
-        print("\n" + "🎉" * 60)
-        print("🎉 PIPELINE COMPLETED SUCCESSFULLY!")
-        print("🎉" * 60)
+        print("\n" + "🎉" * 70)
+        print("🎉 PIPELINE COMPLETED SUCCESSFULLY WITH GLOBAL ONTOLOGY!")
+        print("🎉" * 70)
         print(f"📁 All outputs created in: {base_dir}")
+        print(f"📚 Global ontology updated: {base_dir}/global_ontology.json")
         
         # Summary
         step_names = {
             "step1": "Survey Dictionary", 
             "step2": "CSV Data",
-            "step3": "Categorized Survey", 
-            "step4": "Class Names", 
+            "step3": "Categorized Survey (with Ontology)", 
+            "step4": "Class Names (with Ontology)", 
             "step5": "Final Ontology"
         }
         
@@ -645,11 +703,13 @@ def main():
                 print(f"  ⏭️ {step_names[step]}: Not requested")
         
         print("\n✅ Your survey ontology pipeline execution completed!")
+        print("📚 Global ontology has been updated and will speed up future runs!")
         
         # Show the final directory structure if any steps completed
         if len([s for s in normalized_steps if results.get(s) and results[s] != "skipped"]) > 0:
             print(f"\n📂 Directory Structure:")
             print(f"{base_dir}/")
+            print(f"├── global_ontology.json  📚 (Global knowledge base)")
             for dir_name in ["SurveyDictionary", "CategoryClassification", "ClassCreation", "Ontology"]:
                 dir_path = base_dir / dir_name
                 if dir_path.exists():
@@ -664,7 +724,6 @@ def main():
     except Exception as e:
         print(f"\n❌ Pipeline failed: {e}")
         sys.exit(1)
-
 if __name__ == "__main__":
     main()
     step_functions = {

@@ -111,6 +111,35 @@ Class creation analysis for this question:"""
     
     return prompt
 
+
+# ============================================================
+# GLOBAL ONTOLOGY INTEGRATION
+# ============================================================
+
+def load_global_ontology(file_path: str = "global_ontology.json") -> Dict:
+    """Load the global ontology file if it exists"""
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                global_ontology = json.load(f)
+            print(f"📚 Loaded global ontology with {len(global_ontology)} entries from: {file_path}")
+            return global_ontology
+        else:
+            print(f"📚 Global ontology file not found: {file_path}")
+            return {}
+    except Exception as e:
+        print(f"❌ Error loading global ontology: {str(e)}")
+        return {}
+
+def save_global_ontology(global_ontology: Dict, file_path: str = "global_ontology.json"):
+    """Save the updated global ontology file"""
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(global_ontology, f, indent=2, ensure_ascii=False)
+        print(f"💾 Saved updated global ontology with {len(global_ontology)} entries to: {file_path}")
+    except Exception as e:
+        print(f"❌ Error saving global ontology: {str(e)}")
+
 # ============================================================
 # AZURE OPENAI LLM CLASS
 # ============================================================
@@ -146,14 +175,24 @@ class AzureLLM:
 # ============================================================
 # CLASS NAME GENERATION TOOL WITH UNIQUENESS
 # ============================================================
-class GenerateClassNameTool:
-    """Tool for generating appropriate class names from survey questions"""
+class GenerateClassNameToolWithOntology:
+    """Tool for generating class names that checks global ontology first but handles edge cases"""
     
-    def __init__(self, llm: AzureLLM):
+    def __init__(self, llm: AzureLLM, global_ontology: Dict = None):
         self.llm = llm
         self.name = "generate_class_name"
         self.description = "Generate a PascalCase class name for a survey question based on its label and possible values"
         self.used_class_names = set()  # Track used class names
+        self.global_ontology = global_ontology or {}
+        
+        # Pre-populate used class names from global ontology (only valid ones)
+        for entry in self.global_ontology.values():
+            class_name = entry.get('generated_class_name') or entry.get('class_name_key') or entry.get('class_name')
+            if class_name and class_name != "UnknownCategory" and class_name.strip():
+                self.used_class_names.add(class_name)
+        
+        if self.used_class_names:
+            print(f"📚 Pre-loaded {len(self.used_class_names)} class names from global ontology")
 
     def run(self, question_data: str) -> str:
         try:
@@ -164,6 +203,28 @@ class GenerateClassNameTool:
             column_label = data.get('column_label', '')
             category = data.get('category', '')
             raw_values = data.get('labelled_values', {})
+            
+            # Check global ontology first
+            if column_name and column_name in self.global_ontology:
+                existing_class_name = (self.global_ontology[column_name].get('generated_class_name') or 
+                                     self.global_ontology[column_name].get('class_name_key') or 
+                                     self.global_ontology[column_name].get('class_name'))
+                
+                # EDGE CASE 2: Generate class name if missing or "UnknownCategory"
+                if existing_class_name and existing_class_name != "UnknownCategory" and existing_class_name.strip():
+                    print(f"🔍 Found '{column_name}' in global ontology")
+                    print(f"📚 Using existing class name: {existing_class_name}")
+                    # Still add to used names to maintain uniqueness
+                    self.used_class_names.add(existing_class_name)
+                    return existing_class_name
+                else:
+                    print(f"🔍 Found '{column_name}' in global ontology but no valid class name")
+                    print(f"🤖 Generating new class name with LLM")
+                    # Continue to LLM generation
+            else:
+                print(f"🤖 '{column_name}' not found in global ontology, using LLM generation")
+            
+            # Proceed with LLM generation (either new question or needs class name generation)
             
             # Robustly handle non-dict labelled_values
             if not isinstance(raw_values, dict):
@@ -204,25 +265,36 @@ class GenerateClassNameTool:
                 print(f"▶️ LLM response length: {len(response)} characters")
                 print(f"▶️ LLM response: {repr(response)}")
                 
-                # ONLY extract from "Final Answer:" format
+                # IMPROVED: Extract ONLY from LLM response, not from prompt examples
                 response = response.strip()
                 
-                # Extract from "Final Answer:" format
-                final_answer_match = re.search(r'Final Answer:\s*(.+?)(?=\n|$)', response, re.IGNORECASE)
-                if final_answer_match:
-                    extracted_class = final_answer_match.group(1).strip()
-                    print(f"▶️ Extracted from Final Answer: {extracted_class}")
+                # Find ALL "Final Answer:" occurrences and take the LAST one (LLM's actual answer)
+                final_answer_matches = list(re.finditer(r'Final Answer:\s*(.+?)(?=\n|$)', response, re.IGNORECASE))
+                
+                if final_answer_matches:
+                    # Take the LAST match (LLM's response, not prompt examples)
+                    last_match = final_answer_matches[-1]
+                    extracted_class = last_match.group(1).strip()
+                    
+                    # Clean up common artifacts
+                    extracted_class = extracted_class.replace('<your_class_name_here>', '').strip()
+                    extracted_class = extracted_class.replace('<', '').replace('>', '').strip()
+                    
+                    print(f"▶️ Extracted from Final Answer (match {len(final_answer_matches)}): {extracted_class}")
                     
                     # Validate and clean the extracted class name
                     validated_name = validate_class_name(extracted_class)
                     
-                    # Check if it's unique
-                    if validated_name != "UnknownCategory" and validated_name not in self.used_class_names:
+                    # Check if it's unique and valid
+                    if validated_name != "UnknownCategory" and len(validated_name) > 3 and validated_name not in self.used_class_names:
                         self.used_class_names.add(validated_name)
                         print(f"▶️ Final unique class name: {validated_name}")
                         return validated_name
                     elif validated_name in self.used_class_names:
                         print(f"⚠️ Class name '{validated_name}' already exists, retrying...")
+                        continue
+                    else:
+                        print(f"⚠️ Invalid class name '{validated_name}', retrying...")
                         continue
                 
                 print(f"▶️ Attempt {attempt + 1} failed, retrying...")
@@ -312,20 +384,24 @@ Class creation analysis for this question:"""
                 return candidate
             counter += 1
 
+
 # ============================================================
 # DIRECT TOOL APPROACH FOR CLASS NAME GENERATION WITH UNIQUENESS
 # ============================================================
 
-def generate_class_names_direct(survey_json: str) -> str:
-    """Direct tool approach for generating unique class names using Azure OpenAI"""
+def generate_class_names_direct_with_ontology(survey_json: str, global_ontology_path: str = "global_ontology.json") -> str:
+    """Class name generation with global ontology integration and proper updates"""
     
     survey_data = json.loads(survey_json)
     
-    print(f"🤖 Using Azure OpenAI {MODEL_NAME} for class name generation...")
+    # Load global ontology
+    global_ontology = load_global_ontology(global_ontology_path)
     
-    # Create LLM and tool (tool will track unique names)
+    print(f"🤖 Using Azure OpenAI {MODEL_NAME} for class name generation with global ontology...")
+    
+    # Create LLM and tool with ontology
     llm = AzureLLM(client, MODEL_NAME)
-    tool = GenerateClassNameTool(llm=llm)
+    tool = GenerateClassNameToolWithOntology(llm=llm, global_ontology=global_ontology)
     
     print(f"🔧 Direct tool created, processing {len(survey_data)} questions...")
     print(f"📊 Ensuring all {len(survey_data)} class names are unique...")
@@ -333,14 +409,55 @@ def generate_class_names_direct(survey_json: str) -> str:
     # Process questions
     results = {}
     processed_count = 0
+    ontology_hits = 0
+    llm_generations = 0
+    missing_class_generations = 0
+    updated_entries = {}
     
     for i, (name, q) in enumerate(survey_data.items(), 1):
         try:
             print(f"\n📝 [{i}/{len(survey_data)}] Generating class name for: {name}")
             print(f"   📊 Already generated: {len(tool.used_class_names)} unique class names")
             
+            # Check if this was found in ontology and what class name it had
+            was_in_ontology = name in global_ontology
+            existing_class_name = ""
+            if was_in_ontology:
+                existing_class_name = (global_ontology[name].get('generated_class_name') or 
+                                     global_ontology[name].get('class_name_key') or 
+                                     global_ontology[name].get('class_name') or "")
+            
             # Direct tool call
             class_name = tool.run(q)
+            
+            # Track statistics and update ontology
+            if was_in_ontology and existing_class_name and existing_class_name != "UnknownCategory":
+                ontology_hits += 1
+            elif was_in_ontology and (not existing_class_name or existing_class_name == "UnknownCategory"):
+                missing_class_generations += 1
+                # Update existing ontology entry with new class name
+                global_ontology[name]['generated_class_name'] = class_name
+                global_ontology[name]['class_name_key'] = class_name
+                global_ontology[name]['class_generation_source'] = 'LLM_generation'
+                global_ontology[name]['class_model_used'] = MODEL_NAME
+                updated_entries[name] = global_ontology[name]
+            else:
+                llm_generations += 1
+                # Add completely new entry to global ontology
+                new_entry = {
+                    "original_column": name,
+                    "generated_class_name": class_name,
+                    "class_name_key": class_name,
+                    "column_label": q.get('column_label', ''),
+                    "category": q.get('category', ''),
+                    "labelled_values": q.get('labelled_values', {}),
+                    "approach": "direct_tool",
+                    "model_used": MODEL_NAME,
+                    "uniqueness_ensured": True,
+                    "source": "LLM_generation"
+                }
+                global_ontology[name] = new_entry
+                updated_entries[name] = new_entry
             
             results[name] = {
                 "original_column": name,
@@ -351,7 +468,8 @@ def generate_class_names_direct(survey_json: str) -> str:
                 "labelled_values": q.get('labelled_values', {}),
                 "approach": "direct_tool",
                 "model_used": MODEL_NAME,
-                "uniqueness_ensured": True
+                "uniqueness_ensured": True,
+                "source": "global_ontology" if (was_in_ontology and existing_class_name and existing_class_name != "UnknownCategory") else "LLM_generation"
             }
             
             processed_count += 1
@@ -370,15 +488,25 @@ def generate_class_names_direct(survey_json: str) -> str:
                 "category": q.get('category', ''),
                 "labelled_values": q.get('labelled_values', {}),
                 "approach": "direct_tool",
-                "uniqueness_ensured": True
+                "uniqueness_ensured": True,
+                "source": "error_fallback"
             }
+    
+    # Update global ontology with new/updated entries
+    if updated_entries:
+        save_global_ontology(global_ontology, global_ontology_path)
+        print(f"📚 Updated global ontology with {len(updated_entries)} entries")
     
     # Verify uniqueness
     all_class_names = [r["generated_class_name"] for r in results.values()]
     unique_class_names = set(all_class_names)
     
     print(f"\n🎉 Completed all {len(survey_data)} class name generations!")
-    print(f"📊 UNIQUENESS VERIFICATION:")
+    print(f"📊 SUMMARY:")
+    print(f"   📚 Found in global ontology: {ontology_hits}")
+    print(f"   🔧 Generated missing class names: {missing_class_generations}")
+    print(f"   🤖 New LLM generations: {llm_generations}")
+    print(f"   📊 UNIQUENESS VERIFICATION:")
     print(f"   Total questions: {len(survey_data)}")
     print(f"   Total class names: {len(all_class_names)}")
     print(f"   Unique class names: {len(unique_class_names)}")
@@ -404,6 +532,7 @@ def generate_class_names_direct(survey_json: str) -> str:
     print(f"💾 Complete results saved to: {output_file}")
     
     return json.dumps(results, indent=2)
+
 # ============================================================
 # AGENTIC APPROACH FOR CLASS NAME GENERATION
 # ============================================================
@@ -585,7 +714,7 @@ def main():
     
     # Test direct tool approach (single call)
     print("💾 Running class name generation and saving results...")
-    results_json = generate_class_names_direct(survey_json)
+    results_json = generate_class_names_direct_with_ontology(survey_json, "global_ontology.json")
     results = json.loads(results_json)
     
     print("\n📊 DIRECT TOOL RESULTS:")

@@ -69,6 +69,35 @@ def save_categorized_results(results_data: Dict, survey_filename: str):
         return None
 
 # ============================================================
+# GLOBAL ONTOLOGY INTEGRATION
+# ============================================================
+
+def load_global_ontology(file_path: str = "global_ontology.json") -> Dict:
+    """Load the global ontology file if it exists"""
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                global_ontology = json.load(f)
+            print(f"📚 Loaded global ontology with {len(global_ontology)} entries from: {file_path}")
+            return global_ontology
+        else:
+            print(f"📚 Global ontology file not found: {file_path}")
+            return {}
+    except Exception as e:
+        print(f"❌ Error loading global ontology: {str(e)}")
+        return {}
+
+def save_global_ontology(global_ontology: Dict, file_path: str = "global_ontology.json"):
+    """Save the updated global ontology file"""
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(global_ontology, f, indent=2, ensure_ascii=False)
+        print(f"💾 Saved updated global ontology with {len(global_ontology)} entries to: {file_path}")
+    except Exception as e:
+        print(f"❌ Error saving global ontology: {str(e)}")
+
+
+# ============================================================
 # AZURE OPENAI LLM CLASS
 # ============================================================
 class AzureLLM:
@@ -101,20 +130,44 @@ class AzureLLM:
 # ============================================================
 # CLASSIFICATION TOOL WITH LABELLED VALUES
 # ============================================================
-class ClassifyQuestionTool:
-    """Direct classification tool with improved robustness and labelled values support"""
+class ClassifyQuestionToolWithOntology:
+    """Classification tool that checks global ontology first but handles edge cases"""
     
-    def __init__(self, llm: AzureLLM):
+    def __init__(self, llm: AzureLLM, global_ontology: Dict = None):
         self.llm = llm
         self.name = "classify_question"
         self.description = "Classify a survey question into exactly one of these seven categories"
+        self.global_ontology = global_ontology or {}
 
     def run(self, question_data: str) -> str:
         try:
-            # Parse question data (expecting JSON string with question_text and labelled_values)
+            # Parse question data
             data = json.loads(question_data)
             question_text = data.get('question_text', '')
             labelled_values = data.get('labelled_values', {})
+            column_name = data.get('column_name', '')  # Extract column name for ontology lookup
+            
+            # Check global ontology first
+            if column_name and column_name in self.global_ontology:
+                existing_category = self.global_ontology[column_name].get('category', '')
+                
+                # EDGE CASE 1: Re-classify if category is "Other/Uncategorized"
+                if existing_category and existing_category != "Other/Uncategorized":
+                    print(f"🔍 Found '{column_name}' in global ontology")
+                    print(f"📚 Using existing category: {existing_category}")
+                    return existing_category
+                elif existing_category == "Other/Uncategorized":
+                    print(f"🔍 Found '{column_name}' in global ontology but category is 'Other/Uncategorized'")
+                    print(f"🤖 Re-classifying with LLM to get better category")
+                    # Continue to LLM classification
+                else:
+                    print(f"🔍 Found '{column_name}' in global ontology but no valid category")
+                    print(f"🤖 Using LLM classification to determine category")
+                    # Continue to LLM classification
+            else:
+                print(f"🤖 '{column_name}' not found in global ontology, using LLM classification")
+            
+            # Proceed with LLM classification (either new question or needs re-classification)
             
             # Input sanitization
             question_text = re.sub(r"[^\w\s?.!,;:-]", "", str(question_text))[:500]
@@ -158,10 +211,8 @@ Category analysis for this question:"""
             response = self.llm._call(prompt)
             print(f"▶️ LLM raw response: {repr(response)}")
             
-            # Improved extraction logic - look for "Final Answer:" first
+            # Extract from "Final Answer:" format
             response = response.strip()
-            
-            # First try: Extract from "Final Answer:" format
             final_answer_match = re.search(r'Final Answer:\s*(.+?)(?=\n|$)', response, re.IGNORECASE)
             if final_answer_match:
                 extracted_category = final_answer_match.group(1).strip()
@@ -189,34 +240,39 @@ Category analysis for this question:"""
                                 print(f"▶️ Tool returning category (Numbered match): {cat}")
                                 return cat
             
-            
             print(f"▶️ Tool returning category (fallback): Other/Uncategorized")
             return "Other/Uncategorized"
             
         except Exception as e:
             print(f"▶️ Tool error: {str(e)}")
             return "Other/Uncategorized"
-
 # ============================================================
 # DIRECT TOOL APPROACH WITH LABELLED VALUES
 # ============================================================
 
-def classify_with_direct_tool(survey_json: str, survey_filename: str = "survey") -> str:
-    """APPROACH 1: Direct tool usage with labelled values support using Azure OpenAI"""
+def classify_with_direct_tool_and_ontology(survey_json: str, survey_filename: str = "survey", global_ontology_path: str = "global_ontology.json") -> str:
+    """Classification with global ontology integration and proper updates"""
     
     survey_data = json.loads(survey_json)
     
-    print(f"🤖 Using Azure OpenAI {MODEL_NAME} for direct tool usage...")
+    # Load global ontology
+    global_ontology = load_global_ontology(global_ontology_path)
     
-    # Create LLM and tool
+    print(f"🤖 Using Azure OpenAI {MODEL_NAME} for direct tool usage with global ontology...")
+    
+    # Create LLM and tool with ontology
     llm = AzureLLM(client, MODEL_NAME)
-    tool = ClassifyQuestionTool(llm=llm)
+    tool = ClassifyQuestionToolWithOntology(llm=llm, global_ontology=global_ontology)
     
     print(f"🔧 Direct tool created, processing {len(survey_data)} questions...")
     
     # Process questions with direct tool calls
     results = {}
     uncategorized_questions = {}
+    ontology_hits = 0
+    llm_classifications = 0
+    re_classifications = 0
+    updated_entries = {}
     
     for i, (name, q) in enumerate(survey_data.items(), 1):
         try:
@@ -235,16 +291,44 @@ def classify_with_direct_tool(survey_json: str, survey_filename: str = "survey")
             else:
                 print(f"   Labels: No label values")
             
-            # Prepare data for tool - ensure proper JSON structure
+            # Check if this was in ontology and what the original category was
+            was_in_ontology = name in global_ontology
+            original_category = global_ontology.get(name, {}).get('category', '') if was_in_ontology else ''
+            
+            # Prepare data for tool - include column_name for ontology lookup
             tool_input = json.dumps({
                 'question_text': str(question_text),
-                'labelled_values': labelled_values if isinstance(labelled_values, dict) else {}
+                'labelled_values': labelled_values if isinstance(labelled_values, dict) else {},
+                'column_name': name  # Add column name for ontology lookup
             })
             
             print(f"   🔧 Tool input prepared: question_text='{question_text}', labelled_values={len(labelled_values)} items")
             
             # Direct tool call
             category = tool.run(tool_input)
+            
+            # Track statistics
+            if was_in_ontology and original_category and original_category != "Other/Uncategorized":
+                ontology_hits += 1
+            elif was_in_ontology and original_category == "Other/Uncategorized":
+                re_classifications += 1
+                # Update the ontology entry with new category
+                global_ontology[name]['category'] = category
+                global_ontology[name]['source'] = 'LLM_re_classification'
+                global_ontology[name]['model_used'] = MODEL_NAME
+                updated_entries[name] = global_ontology[name]
+            else:
+                llm_classifications += 1
+                # Add new entry to global ontology
+                updated_entries[name] = {
+                    "original_column": name,
+                    "column_label": question_text,
+                    "category": category,
+                    "labelled_values": labelled_values,
+                    "source": "LLM_classification",
+                    "model_used": MODEL_NAME
+                }
+                global_ontology[name] = updated_entries[name]
             
             # Add category to existing question data
             q_with_category = q.copy()
@@ -266,6 +350,11 @@ def classify_with_direct_tool(survey_json: str, survey_filename: str = "survey")
             results[name] = q_with_error
             uncategorized_questions[name] = q_with_error
     
+    # Update global ontology with new/updated entries
+    if updated_entries:
+        save_global_ontology(global_ontology, global_ontology_path)
+        print(f"📚 Updated global ontology with {len(updated_entries)} entries")
+    
     # Save uncategorized questions to separate file
     save_uncategorized_questions(uncategorized_questions, survey_filename)
     
@@ -273,7 +362,11 @@ def classify_with_direct_tool(survey_json: str, survey_filename: str = "survey")
     save_categorized_results(results, survey_filename)
     
     print(f"\n🎉 Completed all {len(survey_data)} direct tool classifications!")
-    print(f"📊 Summary: {len(uncategorized_questions)} questions classified as Other/Uncategorized")
+    print(f"📊 Summary:")
+    print(f"   📚 Found in global ontology: {ontology_hits}")
+    print(f"   🔄 Re-classified from Other/Uncategorized: {re_classifications}")
+    print(f"   🤖 New LLM classifications: {llm_classifications}")
+    print(f"   ❓ Still uncategorized: {len(uncategorized_questions)}")
     
     return json.dumps(results)
 
@@ -467,7 +560,7 @@ def main():
     print()
     
     # Test direct tool approach
-    results_json = classify_with_direct_tool(survey_json, survey_filename)
+    results_json = classify_with_direct_tool_and_ontology(survey_json, base_name, "global_ontology.json")
     results = json.loads(results_json)
     
     # Save results locally
